@@ -1,19 +1,28 @@
 """API de transcricao compativel com OpenAI (POST /v1/audio/transcriptions)."""
-import json
 import os
 import tempfile
-import urllib.error
-import urllib.request
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
-from fastapi.responses import JSONResponse
+from faster_whisper import WhisperModel
 
 TOKEN = os.environ.get("AUDIO_API_TOKEN", "")
-WHISPER_URL = os.environ.get("WHISPER_URL", "http://127.0.0.1:8765/transcribe")
+MODEL_DIR = os.environ.get("MODEL_DIR", "/models")
+MODEL_NAME = os.environ.get("WHISPER_MODEL", "base")
 DEFAULT_LANG = os.environ.get("DEFAULT_LANGUAGE", "pt")
+COMPUTE = os.environ.get("COMPUTE_TYPE", "int8")
 
 app = FastAPI(title="ClickGerais Audio API")
+_model = None
+
+
+def _model():
+    global _model
+    if _model is None:
+        path = Path(MODEL_DIR)
+        src = str(path) if (path / "model.bin").exists() else MODEL_NAME
+        _model = WhisperModel(src, device="cpu", compute_type=COMPUTE)
+    return _model
 
 
 def _auth(authorization: str | None) -> None:
@@ -23,18 +32,9 @@ def _auth(authorization: str | None) -> None:
         raise HTTPException(401, "invalid api key")
 
 
-def _transcribe(path: str, language: str) -> dict:
-    payload = json.dumps({"audio": path, "language": language}).encode()
-    req = urllib.request.Request(
-        WHISPER_URL, data=payload, headers={"Content-Type": "application/json"}
-    )
-    with urllib.request.urlopen(req, timeout=600) as resp:
-        return json.loads(resp.read())
-
-
 @app.get("/health")
 def health():
-    return {"ok": True}
+    return {"ok": True, "model": MODEL_NAME}
 
 
 @app.get("/v1/models")
@@ -46,27 +46,27 @@ def models():
 async def transcriptions(
     file: UploadFile = File(...),
     model: str = Form("whisper-1"),
-    language: str = Form(DEFAULT_LANG),
+    language: str = Form(None),
     response_format: str = Form("json"),
     authorization: str | None = Header(default=None),
 ):
     _auth(authorization)
-    data = await file.read()
-    if not data:
-        raise HTTPException(400, "empty audio")
     suffix = Path(file.filename or "audio.webm").suffix or ".webm"
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        tmp.write(await file.read())
+        path = tmp.name
     try:
-        tmp.write(data)
-        tmp.close()
-        try:
-            result = _transcribe(tmp.name, language)
-        except urllib.error.URLError as exc:
-            raise HTTPException(502, f"stt backend unreachable: {exc}") from exc
+        segments, info = _model().transcribe(
+            path,
+            language=language or DEFAULT_LANG,
+            beam_size=5,
+            temperature=0.0,
+            vad_filter=True,
+            vad_parameters={"min_silence_duration_ms": 500},
+        )
+        text = " ".join(s.text.strip() for s in segments).strip()
     finally:
-        Path(tmp.name).unlink(missing_ok=True)
-
-    text = (result.get("text") or "").strip()
+        Path(path).unlink(missing_ok=True)
     if response_format == "text":
-        return JSONResponse(content=text)
-    return {"text": text, "language": result.get("language", language), "duration": result.get("duration")}
+        return text
+    return {"text": text, "language": getattr(info, "language", language), "duration": getattr(info, "duration", None)}
