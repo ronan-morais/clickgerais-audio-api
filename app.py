@@ -13,16 +13,16 @@ DEFAULT_LANG = os.environ.get("DEFAULT_LANGUAGE", "pt")
 COMPUTE = os.environ.get("COMPUTE_TYPE", "int8")
 
 app = FastAPI(title="ClickGerais Audio API")
-_model = None
+_cached = None
 
 
-def _model():
-    global _model
-    if _model is None:
+def _get_model():
+    global _cached
+    if _cached is None:
         path = Path(MODEL_DIR)
         src = str(path) if (path / "model.bin").exists() else MODEL_NAME
-        _model = WhisperModel(src, device="cpu", compute_type=COMPUTE)
-    return _model
+        _cached = WhisperModel(src, device="cpu", compute_type=COMPUTE)
+    return _cached
 
 
 def _auth(authorization: str | None) -> None:
@@ -56,7 +56,7 @@ async def transcriptions(
         tmp.write(await file.read())
         path = tmp.name
     try:
-        segments, info = _model().transcribe(
+        segments, info = _get_model().transcribe(
             path,
             language=language or DEFAULT_LANG,
             beam_size=5,
