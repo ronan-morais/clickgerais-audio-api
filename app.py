@@ -11,6 +11,7 @@ MODEL_DIR = os.environ.get("MODEL_DIR", "/models")
 MODEL_NAME = os.environ.get("WHISPER_MODEL", "base")
 DEFAULT_LANG = os.environ.get("DEFAULT_LANGUAGE", "pt")
 COMPUTE = os.environ.get("COMPUTE_TYPE", "int8")
+INITIAL_PROMPT = os.environ.get("INITIAL_PROMPT", "")
 
 app = FastAPI(title="ClickGerais Audio API")
 _cached = None
@@ -63,6 +64,8 @@ async def transcriptions(
             temperature=0.0,
             vad_filter=True,
             vad_parameters={"min_silence_duration_ms": 500},
+            initial_prompt=INITIAL_PROMPT or None,
+            condition_on_previous_text=False,
         )
         text = " ".join(s.text.strip() for s in segments).strip()
     finally:
